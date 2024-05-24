@@ -138,6 +138,13 @@ config PAROS_DTB
         help
                 Only include Motorola Paros device specific DTB.
 
+config KOBE_DTB
+        depends on MMI_DEVICE_DTBS
+        default n
+        bool "Motorola Mobility Kobe Device DTB"
+        help
+                Only include Motorola Kobe device specific DTB.
+
 config AVATRN_DTB
         depends on MMI_DEVICE_DTBS
         default n
