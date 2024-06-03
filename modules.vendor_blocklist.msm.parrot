@@ -70,3 +70,5 @@ blocklist fpc1020_mmi.ko
 blocklist ets_bix_mmi.ko
 blocklist goodix_fod_mmi.ko
 blocklist anc_fps_mmi.ko
+# MMI_STOPSHIP <focal-touch>: focal driver will fix this load sequence
+blocklist focaltech_0flash_v2_mmi.ko
