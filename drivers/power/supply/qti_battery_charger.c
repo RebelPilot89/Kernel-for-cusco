@@ -104,6 +104,8 @@ enum battery_property_id {
 	BATT_RESISTANCE,
 	BATT_POWER_NOW,
 	BATT_POWER_AVG,
+	BATT_QNS_VOLT_MAX,
+	BATT_CHG_QNS_CTRL_LIM_MAX,
 	BATT_PROP_MAX,
 };
 
@@ -1423,6 +1425,28 @@ static int tbatt_filter_handler(struct battery_chg_dev *bcdev, int batt_temp)
 	return ret;
 }
 
+static int battery_psy_set_battery_fv(struct battery_chg_dev *bcdev, int val)
+{
+	int rc;
+	rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_BATTERY],
+					BATT_QNS_VOLT_MAX, val);
+	if (rc < 0)
+		pr_err("%s:%d failed to write property", __func__, __LINE__);
+
+	return rc;
+}
+
+static int battery_psy_set_battery_fcc(struct battery_chg_dev *bcdev, int val)
+{
+	int rc;
+	rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_BATTERY],
+					BATT_CHG_QNS_CTRL_LIM_MAX, val);
+	if (rc < 0)
+		pr_err("%s:%d failed to write property", __func__, __LINE__);
+
+	return rc;
+}
+
 static int battery_psy_get_prop(struct power_supply *psy,
 		enum power_supply_property prop,
 		union power_supply_propval *pval)
@@ -1513,6 +1537,10 @@ static int battery_psy_set_prop(struct power_supply *psy,
 	switch (prop) {
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
 		return battery_psy_set_charge_current(bcdev, pval->intval);
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
+		return battery_psy_set_battery_fv(bcdev, pval->intval);
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
+		return battery_psy_set_battery_fcc(bcdev, pval->intval);
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
 		return battery_psy_set_cycle_count(bcdev, pval->intval);
 	default:
@@ -1527,6 +1555,8 @@ static int battery_psy_prop_is_writeable(struct power_supply *psy,
 {
 	switch (prop) {
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
+	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
 		return 1;
 	default:
