@@ -37,76 +37,6 @@
  */
 
 #include "nfc_common.h"
-#include <linux/notifier.h>
-#include <linux/power_supply.h>
-#include <linux/printk.h>
-#include <linux/module.h>
-#include <linux/interrupt.h>
-#include <linux/delay.h>
-#include <linux/uaccess.h>
-#include <linux/gpio.h>
-#include <linux/of_gpio.h>
-#ifdef CONFIG_COMPAT
-#include <linux/compat.h>
-#endif
-#include <linux/fs.h>
-
-MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
-
-extern ssize_t kernel_read(struct file *, void *, size_t, loff_t *);
-
-extern struct file *filp_open(const char *, int, umode_t);
-
-static bool getBootreason() {
-	char buf[2000];
-	char *result;
-	char value[1024];
-	struct file *fp;
-	ssize_t count;
-	loff_t pos = 0;
-
-	fp = filp_open("/proc/device-tree/chosen/mmi,bootconfig", O_RDONLY, 0);
-	if (IS_ERR(fp)) {
-		pr_err("%s : Error opening mmi,bootconfig\n", __func__);
-		return false;
-	}
-	count = kernel_read(fp, buf, sizeof(buf)-1, &pos);
-	if (count < 0) {
-		pr_err("%s : Error to read file\n", __func__);
-		filp_close(fp, NULL);
-		return false;
-	}
-	result = strstr(buf, "androidboot.powerup_reason=");
-	if (result!= NULL) {
-		strcpy(value, result + strlen("androidboot.powerup_reason="));
-		value[strcspn(value, "\n")] = '\0';
-	}
-	filp_close(fp, NULL);
-	if((strcmp(value, "0x00000100") == 0) || (strcmp(value, "0x00800000") == 0)) {
-		return true;
-	} else {
-		return false;
-	}
-}
-
-bool is_charging_state = false;
-
-static int nfc_charger_callback(struct notifier_block *self, unsigned long event, void *ptr)
-{
-    struct power_supply *psy = ptr;
-
-	if (((event == PSY_EVENT_PROP_CHANGED) && psy && getBootreason() &&
-	psy->desc && psy->desc->get_property && psy->desc->name &&
-	(!strncmp(psy->desc->name, "usb", sizeof("usb")) ||
-	!strncmp(psy->desc->name, "wireless", sizeof("wireless"))))) {
-        	is_charging_state = true;
-	}
-	return 0;
-}
-
-static struct notifier_block charger_notifier_nfc = {
-    .notifier_call = nfc_charger_callback,
-};
 
 /**
  * i2c_disable_irq()
@@ -358,31 +288,10 @@ int nfc_i2c_dev_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	struct i2c_dev *i2c_dev = NULL;
 	struct platform_configs nfc_configs;
 	struct platform_gpio *nfc_gpio = &nfc_configs.gpio;
-	struct device *dev_for_charger = &client->dev;
+
 	pr_debug("%s: enter\n", __func__);
 
 	//retrieve details of gpios from dt
-	if(is_charging_state == true) {
-		pr_err("%s: charging interrupt\n", __func__);
-		nfc_dev = kzalloc(sizeof(struct nfc_dev), GFP_KERNEL);
-		if (nfc_dev == NULL) {
-			ret = -ENOMEM;
-			goto err;
-		}
-		nfc_configs = nfc_dev->configs;
-		nfc_gpio = &(nfc_configs.gpio);
-		nfc_gpio->ven = -EINVAL;
-		nfc_gpio->ven = of_get_named_gpio(dev_for_charger->of_node, DTS_VEN_GPIO_STR, 0);
-		if ((!gpio_is_valid(nfc_gpio->ven))) {
-			pr_err("nfc probe1 ven gpio invalid %d\n", nfc_gpio->ven);
-			return -EINVAL;
-		}
-		gpio_direction_output(nfc_gpio->ven, 1);
-		/* hardware dependent delay */
-		usleep_range(10000, 10100);
-
-		return 0;
-	}
 
 	ret = nfc_parse_dt(&client->dev, &nfc_configs, PLATFORM_IF_I2C);
 	if (ret) {
@@ -528,11 +437,6 @@ int nfc_i2c_dev_remove(struct i2c_client *client)
 	struct nfc_dev *nfc_dev = NULL;
 
 	pr_info("%s: remove device\n", __func__);
-
-	if(is_charging_state == true) {
-		pr_err("%s: charging interrupt\n", __func__);
-		return 0;
-	}
 	nfc_dev = i2c_get_clientdata(client);
 	if (!nfc_dev) {
 		pr_err("%s: device doesn't exist anymore\n", __func__);
@@ -657,16 +561,10 @@ MODULE_DEVICE_TABLE(of, nfc_i2c_dev_match_table);
 static int __init nfc_i2c_dev_init(void)
 {
 	int ret = 0;
-	int ret_charger = 0;
 
 	ret = i2c_add_driver(&nfc_i2c_dev_driver);
 	if (ret != 0)
 		pr_err("NFC I2C add driver error ret %d\n", ret);
-
-	ret_charger = power_supply_reg_notifier(&charger_notifier_nfc);
-	if (ret_charger) {
-	pr_err("Failed to register power supply notifier: %d\n", ret_charger);
-	}
 	return ret;
 }
 
