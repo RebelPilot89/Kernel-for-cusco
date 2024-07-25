@@ -24,6 +24,7 @@
 #include <linux/soc/qcom/battery_charger.h>
 #include <linux/soc/qcom/panel_event_notifier.h>
 #include "qti_typec_class.h"
+#include <linux/slab.h>
 
 #define MSG_OWNER_BC			32778
 #define MSG_TYPE_REQ_RESP		1
@@ -58,6 +59,50 @@
 #define WLS_FW_UPDATE_TIME_MS		1000
 #define WLS_FW_BUF_SIZE			128
 #define DEFAULT_RESTRICT_FCC_UA		1000000
+
+enum {
+	FULL_CHG_OFF = 0x0100,
+	FULL_CHG_ON,
+	SCHEDULE_CHG_OFF = 0x0200,
+	SCHEDULE_CHG_ON,
+	CHG_PROTECT_OFF = 0x0300,
+	CHG_PROTECT_ON,
+};
+
+enum {
+	TURN_OFF_LIMIT_CHG = 0,
+	TURN_ON_85_LIMIT_CHG,
+};
+
+#define BATTERY_DESIGNCAP		4850000
+#define CHG_SHOW_MAX_SIZE 50
+
+#define STOP_CHARGE_85_LOW_SOC 85
+#define STOP_CHARGE_85_HIGH_SOC 87
+
+#define FCNT_USB_TEMP 7000
+
+#define FCNT_BATTERY_HEALTH_OVERVOLTAGE         4
+#define FCNT_BATTERY_HEALTH_COLD                6
+#define FCNT_BATTERY_HEALTH_GOOD                1
+#define	FCNT_BATTERY_HEALTH_DEVICE_HOT          14
+#define FCNT_BATTERY_HEALTH_USB_MOISTURE        15
+#define FCNT_BATTERY_HEALTH_CHG_OVERTIME        16
+#define	FCNT_BATTERY_HEALTH_CHG_UNDERVOLTAGE    17
+#define FCNT_BATTERY_HEALTH_CHG_OVERVOLTAGE     18
+#define FCNT_BATTERY_HEALTH_REMOVE_CHG          19
+
+enum {
+	HEALTH_NOTIFY_EVENT_TYPE_GOOD = 1,
+	HEALTH_NOTIFY_EVENT_TYPE_OVERVOLTAGE = 4,
+	HEALTH_NOTIFY_EVENT_TYPE_COLD = 6,
+	HEALTH_NOTIFY_EVENT_TYPE_DEVICE_HOT = 14,
+	HEALTH_NOTIFY_EVENT_TYPE_USB_MOISTURE,
+	HEALTH_NOTIFY_EVENT_TYPE_CHG_OVERTIME,
+	HEALTH_NOTIFY_EVENT_TYPE_CHG_UNDERVOLTAGE,
+	HEALTH_NOTIFY_EVENT_TYPE_CHG_OVERVOLTAGE,
+	HEALTH_NOTIFY_EVENT_TYPE_REMOVE_CHG,
+};
 
 enum usb_connector_type {
 	USB_CONNECTOR_TYPE_TYPEC,
@@ -106,6 +151,7 @@ enum battery_property_id {
 	BATT_POWER_AVG,
 	BATT_QNS_VOLT_MAX,
 	BATT_CHG_QNS_CTRL_LIM_MAX,
+	BATT_FV_REDUCTION,
 	BATT_PROP_MAX,
 };
 
@@ -126,6 +172,11 @@ enum usb_property_id {
 	USB_SCOPE,
 	USB_CONNECTOR_TYPE,
 	F_ACTIVE,
+	USB_CC_ORIENTATION,
+	USB_CC_OPEN,
+	USB_PRESENT_USB,
+	USB_FULL_CHARGE_SET,
+	USB_OTG_ENABLE,
 	USB_PROP_MAX,
 };
 
@@ -299,6 +350,48 @@ struct battery_chg_dev {
 	bool				notify_en;
 	bool				error_prop;
 	struct power_supply		*combo_batt_psy;
+	struct delayed_work		battery_monitor_work;
+	struct delayed_work   		full_charge_setting_work;
+	struct class			oem_battery_class;
+	char				*batt_uenvp[2];
+	bool				full_charge_setting;
+	bool				high_soc;
+	bool				schedule_chg;
+	bool				temp_err;
+	bool				vbat_over;
+	bool				vchg_err;
+	bool				chg_stop;
+	bool				chging_over_time;
+	bool				total_time;
+	bool				cc_open;
+	bool				otg_enable;
+	bool				cycle_clear;
+	int				cycle_count;
+	int				oem_cycle_count;
+	int				charge_full;
+	int				charge_full_design;
+	int				age;
+	int				batt_present;
+	int				batt_status;
+	int				batt_temp;
+	int				batt_soc;
+	int				batt_current;
+	int				curr_fcc;
+	int				batt_voltage;
+	int				batt_ocv;
+	int				batt_volmax;
+	int				batt_health;
+	int				dbg_health;
+	int				usb_online;
+	int				usb_present;
+	int				usb_current;
+	int				usb_voltage;
+	int				usb_vol_max;
+	int				usb_temp;
+	int				real_chg_type;
+	int				charger_type;
+	int				lpd_status;
+	bool				fcnt_charging_feature_supported;
 };
 
 static const int battery_prop_map[BATT_PROP_MAX] = {
@@ -1509,6 +1602,12 @@ static int battery_psy_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT_MAX:
 		pval->intval = bcdev->num_thermal_levels;
 		break;
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		if (bcdev->fcnt_charging_feature_supported) {
+			bcdev->cycle_count = pst->prop[prop_id];
+			pval->intval = bcdev->oem_cycle_count;
+			break;
+		}
 	case POWER_SUPPLY_PROP_STATUS:
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
@@ -2351,6 +2450,187 @@ static ssize_t ship_mode_en_show(struct class *c, struct class_attribute *attr,
 }
 static CLASS_ATTR_RW(ship_mode_en);
 
+static ssize_t dbg_health_store(struct class *c, struct class_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int val;
+	char *event_string = NULL;
+
+	if (kstrtoint(buf, 0, &val))
+		return -EINVAL;
+
+	bcdev->dbg_health = val;
+	pr_debug("Set dbg health to %d\n", val);
+
+	event_string = kmalloc(CHG_SHOW_MAX_SIZE, GFP_KERNEL);
+	if (event_string) {
+		switch (bcdev->dbg_health) {
+		case HEALTH_NOTIFY_EVENT_TYPE_GOOD:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Good");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_OVERVOLTAGE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Battery_over_voltage");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_COLD:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Cold");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_DEVICE_HOT:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Device_hot");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_USB_MOISTURE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Usb_moisture_det");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_CHG_OVERTIME:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Chg_overtime");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_CHG_UNDERVOLTAGE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Under_voltage");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_CHG_OVERVOLTAGE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Over_voltage");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_REMOVE_CHG:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Usb_connect_err");
+			break;
+		default:
+			pr_info("Invalid notify event type %d\n", bcdev->dbg_health);
+			goto out;
+		}
+
+		if (bcdev->batt_uenvp[0])
+			bcdev->batt_uenvp[0] = NULL;
+		bcdev->batt_uenvp[0] = event_string;
+		bcdev->batt_uenvp[1] = NULL;
+
+		printk("[charge monitor work entry event_string: %s]\n", event_string);
+		kobject_uevent_env(&pst->psy->dev.kobj,
+					KOBJ_CHANGE,
+					bcdev->batt_uenvp);
+	}
+out:
+	kfree(event_string);
+	return count;
+}
+
+static ssize_t dbg_health_show(struct class *c, struct class_attribute *attr,
+				char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", bcdev->dbg_health);
+}
+static CLASS_ATTR_RW(dbg_health);
+
+static ssize_t cc_orientation_show(struct class *c, struct class_attribute *attr,
+				char *buf)
+{
+	int rc;
+
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_USB];
+
+	rc = read_property_id(bcdev, pst, USB_CC_ORIENTATION);
+	if (rc < 0)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", pst->prop[USB_CC_ORIENTATION]);
+}
+static CLASS_ATTR_RO(cc_orientation);
+
+static ssize_t cc_open_show(struct class *c,struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_USB];
+	int rc;
+
+	rc = read_property_id(bcdev, pst, USB_CC_OPEN);
+	if (rc < 0)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+				pst->prop[USB_CC_OPEN]);
+}
+static CLASS_ATTR_RO(cc_open);
+
+static ssize_t present_usb_show(struct class *c, struct class_attribute *attr,
+				char *buf)
+{
+	int rc;
+
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_USB];
+
+	rc = read_property_id(bcdev, pst, USB_PRESENT_USB);
+	if (rc < 0)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", pst->prop[USB_PRESENT_USB]);
+}
+static CLASS_ATTR_RO(present_usb);
+
+static ssize_t otg_enable_store(struct class *c, struct class_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	bool val;
+	int rc;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	printk("change otg to %d",val);
+	rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_OTG_ENABLE, val);
+	if (rc < 0) {
+		pr_err("%s:%d failed to write property", __func__, __LINE__);
+	}
+
+	return count;
+}
+
+static ssize_t otg_enable_show(struct class *c, struct class_attribute *attr,
+				char *buf)
+{
+	int rc;
+
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_USB];
+
+	rc = read_property_id(bcdev, pst, USB_OTG_ENABLE);
+	if (rc < 0)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", pst->prop[USB_OTG_ENABLE]);
+}
+static CLASS_ATTR_RW(otg_enable);
+
+static ssize_t curr_fcc_show(struct class *c, struct class_attribute *attr,
+				char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", bcdev->curr_fcc);
+}
+static CLASS_ATTR_RO(curr_fcc);
+
 static struct attribute *battery_class_attrs[] = {
 	&class_attr_soh.attr,
 	&class_attr_resistance.attr,
@@ -2369,6 +2649,12 @@ static struct attribute *battery_class_attrs[] = {
 	&class_attr_restrict_cur.attr,
 	&class_attr_usb_real_type.attr,
 	&class_attr_usb_typec_compliant.attr,
+	&class_attr_dbg_health.attr,
+	&class_attr_cc_orientation.attr,
+	&class_attr_cc_open.attr,
+	&class_attr_present_usb.attr,
+	&class_attr_otg_enable.attr,
+	&class_attr_curr_fcc.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(battery_class);
@@ -2385,6 +2671,12 @@ static struct attribute *battery_class_no_wls_attrs[] = {
 	&class_attr_restrict_cur.attr,
 	&class_attr_usb_real_type.attr,
 	&class_attr_usb_typec_compliant.attr,
+	&class_attr_dbg_health.attr,
+	&class_attr_cc_orientation.attr,
+	&class_attr_cc_open.attr,
+	&class_attr_present_usb.attr,
+	&class_attr_otg_enable.attr,
+	&class_attr_curr_fcc.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(battery_class_no_wls);
@@ -2433,6 +2725,9 @@ static int battery_chg_parse_dt(struct battery_chg_dev *bcdev)
 
 	bcdev->wls_not_supported = of_property_read_bool(node,
 			"qcom,wireless-charging-not-supported");
+
+	bcdev->fcnt_charging_feature_supported = of_property_read_bool(node,
+			"fcnt,charging-feature-supported");
 
 	of_property_read_string(node, "qcom,wireless-fw-name",
 				&bcdev->wls_fw_name);
@@ -2683,6 +2978,852 @@ static int register_extcon_conn_type(struct battery_chg_dev *bcdev)
 	return rc;
 }
 
+static void update_battery_data(struct battery_chg_dev *bcdev)
+{
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int rc;
+
+	rc = read_property_id(bcdev, pst, BATT_PRESENT);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_PRESENT, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_present = pst->prop[BATT_PRESENT];
+
+	rc = read_property_id(bcdev, pst, BATT_STATUS);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_STATUS, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_status = pst->prop[BATT_STATUS];
+
+	rc = read_property_id(bcdev, pst, BATT_TEMP);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_TEMP, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_temp = DIV_ROUND_CLOSEST((int)pst->prop[BATT_TEMP], 10);
+
+	rc = read_property_id(bcdev, pst, BATT_CAPACITY);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_CAPACITY, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_soc = DIV_ROUND_CLOSEST(pst->prop[BATT_CAPACITY], 100);
+
+	rc = read_property_id(bcdev, pst, BATT_CURR_NOW);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_CURR_NOW, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_current = pst->prop[BATT_CURR_NOW];
+
+	rc = read_property_id(bcdev, pst, BATT_VOLT_NOW);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_VOLT_NOW, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_voltage = pst->prop[BATT_VOLT_NOW];
+
+	rc = read_property_id(bcdev, pst, BATT_VOLT_OCV);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_VOLT_OCV, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_ocv = pst->prop[BATT_VOLT_OCV];
+
+	rc = read_property_id(bcdev, pst, BATT_VOLT_MAX);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_VOLT_MAX, rc=%d\n", rc);
+		return;
+	}
+	bcdev->batt_volmax = pst->prop[BATT_VOLT_MAX];
+
+	rc = read_property_id(bcdev, pst, BATT_CHG_CTRL_LIM);
+	if (rc < 0) {
+		pr_err("Failed to read BATT_CHG_CTRL_LIM, rc=%d\n", rc);
+		return;
+	}
+	bcdev->curr_fcc = pst->prop[BATT_CHG_CTRL_LIM];
+}
+
+static void update_chg_data(struct battery_chg_dev *bcdev)
+{
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_USB];
+	int rc;
+
+	rc = read_property_id(bcdev, pst, USB_ONLINE);
+	if (rc < 0) {
+		pr_err("Failed to read USB_ONLINE, rc=%d\n", rc);
+		return;
+	}
+	bcdev->usb_online = pst->prop[USB_ONLINE];
+
+	rc = read_property_id(bcdev, pst, USB_CURR_NOW);
+	if (rc < 0) {
+		pr_err("Failed to read USB_CURR_NOW, rc=%d\n", rc);
+		return;
+	}
+	bcdev->usb_current = pst->prop[USB_CURR_NOW];
+
+	rc = read_property_id(bcdev, pst, USB_VOLT_NOW);
+	if (rc < 0) {
+		pr_err("Failed to read USB_VOLT_NOW, rc=%d\n", rc);
+		return;
+	}
+	bcdev->usb_voltage = pst->prop[USB_VOLT_NOW];
+
+	rc = read_property_id(bcdev, pst, USB_REAL_TYPE);
+	if (rc < 0) {
+		pr_err("Failed to read USB_REAL_TYPE, rc=%d\n", rc);
+		return;
+	}
+	bcdev->real_chg_type = pst->prop[USB_REAL_TYPE];//get_usb_type_name(pst->prop[USB_REAL_TYPE]);
+
+	rc = read_property_id(bcdev, pst, USB_VOLT_MAX);
+	if (rc < 0) {
+		pr_err("Failed to read USB_VOLT_MAX, rc=%d\n", rc);
+		return;
+	}
+	bcdev->usb_vol_max = pst->prop[USB_VOLT_MAX];
+
+	rc = read_property_id(bcdev, pst, USB_TEMP);
+	if (rc < 0) {
+		pr_err("Failed to read USB_TEMP, rc=%d\n", rc);
+		return;
+	}
+	bcdev->usb_temp = pst->prop[USB_TEMP];
+
+	rc = read_property_id(bcdev, pst, USB_PRESENT_USB);
+	if (rc < 0) {
+		pr_err("Failed to read USB_PRESENT, rc=%d\n", rc);
+		return;
+	}
+	bcdev->usb_present = pst->prop[USB_PRESENT_USB];
+
+	rc = read_property_id(bcdev, pst, USB_OTG_ENABLE);
+	if (rc < 0) {
+		pr_err("Failed to read USB_OTG_ENABLE, rc=%d\n", rc);
+		return;
+	}
+	bcdev->otg_enable = pst->prop[USB_OTG_ENABLE];
+
+	rc = read_property_id(bcdev, pst, USB_MOISTURE_DET_STS);
+	if (rc < 0) {
+		pr_err("Failed to read USB_MOISTURE_DET_STS, rc=%d\n", rc);
+		return;
+	}
+	bcdev->lpd_status = pst->prop[USB_MOISTURE_DET_STS];
+}
+
+static void battery_chg_print_log(struct battery_chg_dev *bcdev)
+{
+	pr_info("[charge_info_usb]usb_present:%d /usb_online:%d / usb_voltage:%d / usb_current:%d / chg_type:%s / usb_vol_max:%d / usb_temp:%d / otg_enable:%d\n",
+		bcdev->usb_present,bcdev->usb_online,bcdev->usb_voltage,bcdev->usb_current,get_usb_type_name(bcdev->real_chg_type),bcdev->usb_vol_max,bcdev->usb_temp,bcdev->otg_enable);
+
+	pr_info("[charge_info_battery]batt_present:%d / batt_status:%d / batt_temp:%d / batt_current:%d / batt_voltage:%d / batt_ocv:%d / batt_volmax:%d / batt_soc:%d / fake_soc:%d\n",
+		bcdev->batt_present,bcdev->batt_status,bcdev->batt_temp,bcdev->batt_current,bcdev->batt_voltage,bcdev->batt_ocv,bcdev->batt_volmax,bcdev->batt_soc,bcdev->fake_soc,bcdev->batt_health);
+
+	pr_info("[charge_info_other] curr_fcc = %d / water_det = %d / system_temp_level = %d / full_charge_setting:%d /cycle_count:%d /oem_cycle_count:%d / charge_full:%d /age:%d/ batt_health:%d\n",
+		bcdev->curr_fcc,bcdev->lpd_status,bcdev->curr_thermal_level,bcdev->charge_full,bcdev->cycle_count,bcdev->oem_cycle_count,bcdev->charge_full,bcdev->age, bcdev->batt_health);
+}
+
+static void update_battery_charge_data(struct battery_chg_dev *bcdev)
+{
+	update_battery_data(bcdev);
+	update_chg_data(bcdev);
+}
+
+#define CHG_UPDATE_INTERVAL_SEC 		5
+#define TEMP_CNT	1
+#define HIGH_TEMP	450
+#define LOW_TEMP	0
+static bool battery_chg_check_tbatt_is_good(struct battery_chg_dev *bcdev)
+{
+	static bool ret = true;
+	static int temp_counts = 0;
+
+	if(bcdev->batt_temp >= HIGH_TEMP || bcdev->batt_temp < LOW_TEMP){
+		temp_counts++;
+		if (temp_counts >= TEMP_CNT) {
+			temp_counts = 0;
+			ret = false;
+		}
+	}else {
+		temp_counts = 0;
+		ret = true;
+	}
+
+	return ret;
+}
+
+#define VBAT_CNT	2
+#define HIGH_VBAT	120000
+static bool battery_chg_check_vbatt_is_good(struct battery_chg_dev *bcdev)
+{
+	static bool ret = true;
+	static int vbat_counts = 0;
+
+	if (bcdev->batt_voltage >= (bcdev->batt_volmax + HIGH_VBAT)) {
+		vbat_counts++;
+		if (vbat_counts >= VBAT_CNT) {
+			vbat_counts = 0;
+			ret = false;
+		}
+	} else {
+		vbat_counts = 0;
+		ret = true;
+	}
+	return ret;
+}
+
+#define	BOOT_VOLTAGE	3400000
+#define	CAP	5000
+#define CHG_TIME_LIMIT	(CAP/500 * 60 + 120)
+static void battery_chg_check_time_is_good(struct battery_chg_dev *bcdev)
+{
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int rc = 0;
+
+	if(bcdev->usb_online){
+		bcdev->total_time += CHG_UPDATE_INTERVAL_SEC;
+	}else{
+		bcdev->total_time = 0;
+	}
+
+	if (bcdev->total_time >= CHG_TIME_LIMIT*60){
+		bcdev->chging_over_time = true;
+		pr_info("the charging is over time, stop charging and  update the battery voltage\n");
+		rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, CHG_PROTECT_ON);
+		if (rc < 0) {
+			pr_err("%s:%d failed to write property", __func__, __LINE__);
+		}
+		msleep(500);
+
+		rc = read_property_id(bcdev, pst, BATT_VOLT_NOW);
+		if (rc < 0) {
+			pr_err("Failed to read BATT_VOLT_NOW, rc=%d\n", rc);
+			return;
+		}
+		bcdev->batt_voltage = pst->prop[BATT_VOLT_NOW];
+		if(bcdev->batt_voltage > BOOT_VOLTAGE){
+			bcdev->total_time = 0;
+			bcdev->chging_over_time = false;
+			rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, CHG_PROTECT_OFF);
+			if (rc < 0) {
+				pr_err("%s:%d failed to write property", __func__, __LINE__);
+			}
+			pr_info("%s: Vbus more than 3.4V recalculate charge time! \n",__func__);
+		}
+	} else {
+		bcdev->chging_over_time = false;
+	}
+}
+
+#define VCHG_CNT	2
+#define HIGH_VBUS_9V	11200000
+#define LOW_VBUS_9V		8400000
+#define HIGH_VBUS_5V	6400000
+#define LOW_VBUS_5V		4000000
+#define FORCE_9V		9000000
+#define FORCE_5V		5000000
+static bool chg_check_vchg_is_good(struct battery_chg_dev *bcdev)
+{
+	static bool ret = true;
+	static int vchg_counts = 0;
+
+	pr_info("%s: SW OVLO:%dV UVLO:%dV VBUS:%d\n",__func__,HIGH_VBUS_9V,LOW_VBUS_5V,bcdev->usb_voltage);
+	if (bcdev->usb_voltage >= HIGH_VBUS_9V || bcdev->usb_voltage <= LOW_VBUS_5V) {
+		vchg_counts++;
+		if (vchg_counts >= VCHG_CNT) {
+			vchg_counts = 0;
+			ret = false;
+		}
+	} else {
+		vchg_counts = 0;
+		ret = true;
+	}
+
+	return ret;
+}
+
+#define OTG_MAX_VOLTAGE 	5100000
+#define OTG_CNT				2
+static bool battery_chg_otg_check(struct battery_chg_dev *bcdev)
+{
+	int rc = 0;
+	static int counts = 0;
+
+	if(bcdev->usb_voltage < OTG_MAX_VOLTAGE){
+		counts++;
+		if(counts >= OTG_CNT) {
+			rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_OTG_ENABLE, false);
+			if (rc < 0) {
+				pr_err("%s:%d failed to write property", __func__, __LINE__);
+			}
+			counts = 0;
+			pr_err("%s:%d otg over current!!! ", __func__, __LINE__);
+		}
+	}else {
+		counts = 0;
+	}
+
+	return rc;
+}
+
+static void battery_chg_protection_check(struct battery_chg_dev *bcdev)
+{
+	int rc = 0;
+	if (false == battery_chg_check_tbatt_is_good(bcdev)) {
+		bcdev->temp_err = true;
+		//index = BATTERY_TEMPERATURE_ERROR;
+		pr_info("%s:battery_chg_check_tbatt_is_good false!\n",__func__);
+	} else {
+		if (bcdev->temp_err) {
+			bcdev->temp_err = false;
+			pr_info("%s ,battery_chg_check_tbatt_is_good true! To Normal\n",__func__);
+		}
+	}
+
+	if (false == battery_chg_check_vbatt_is_good(bcdev)) {
+		bcdev->vbat_over = true;
+		//index = BATTERY_VOLTAGE_ERROR;
+		pr_info("%s: battery_chg_check_vbatt_is_good false!\n",__func__);
+	} else {
+		if (bcdev->vbat_over) {
+			bcdev->vbat_over = false;
+			pr_info("%s: battery_chg_check_vbatt_is_good true! To Normal\n",__func__);
+		}
+	}
+
+	if (false == chg_check_vchg_is_good(bcdev)) {
+		bcdev->vchg_err = true;
+		//index = USB_IN_VOLTAGE_ERROR;
+		pr_info("%s: chg_check_vchg_is_good false!\n",__func__);
+	} else {
+		if (bcdev->vchg_err) {
+			bcdev->vchg_err = false;
+			pr_info("%s: chg_check_vchg_is_good true! To Normal\n",__func__);
+		}
+	}
+
+	battery_chg_check_time_is_good(bcdev);
+
+	if(bcdev->temp_err || bcdev->vbat_over || bcdev->lpd_status || bcdev->vchg_err) {
+		rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, CHG_PROTECT_ON);
+		if (rc < 0) {
+			pr_err("%s:%d failed to write property", __func__, __LINE__);
+		}
+		bcdev->chg_stop = true;
+		//pr_info("%s:stop charge! reason:%s\n",__func__,reason[index]);
+		pr_info("%s:stop charge! \n",__func__);
+	}else{
+		if (bcdev->chg_stop && !bcdev->chging_over_time){
+			pr_info("%s:remove stop charge!\n",__func__);
+			rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, CHG_PROTECT_OFF);
+			if (rc < 0) {
+				pr_err("%s:%d failed to write property", __func__, __LINE__);
+			}
+			bcdev->chg_stop = false;
+		}
+	}
+}
+
+static void battery_chg_variables_reset(struct battery_chg_dev *bcdev, bool in)
+{
+	if(in){
+		pr_info("Charger in charger_type = %d\n",bcdev->real_chg_type);
+		bcdev->charger_type = bcdev->real_chg_type;
+	}else{
+		bcdev->charger_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		bcdev->batt_health = POWER_SUPPLY_HEALTH_GOOD;
+	}
+
+	bcdev->temp_err = false;
+	bcdev->vbat_over = false;
+	bcdev->vchg_err = false;
+	bcdev->chging_over_time = false;
+	bcdev->total_time = 0;
+}
+
+void battery_notify_charger_health_event(struct battery_chg_dev *bcdev)
+{
+	char *event_string = NULL;
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+
+	event_string = kmalloc(CHG_SHOW_MAX_SIZE, GFP_KERNEL);
+	if (event_string) {
+		switch (bcdev->batt_health) {
+		case HEALTH_NOTIFY_EVENT_TYPE_GOOD:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Good");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_OVERVOLTAGE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Battery_over_voltage");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_COLD:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Cold");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_DEVICE_HOT:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Device_hot");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_USB_MOISTURE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Usb_moisture_det");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_CHG_OVERTIME:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Chg_overtime");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_CHG_UNDERVOLTAGE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Under_voltage");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_CHG_OVERVOLTAGE:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Over_voltage");
+			break;
+		case HEALTH_NOTIFY_EVENT_TYPE_REMOVE_CHG:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"BATTERY_HEALTH=Usb_connect_err");
+			break;
+		default:
+			pr_info("Invalid notify event type %d\n", bcdev->batt_health);
+			goto out;
+		}
+
+		if (bcdev->batt_uenvp[0])
+			bcdev->batt_uenvp[0] = NULL;
+		bcdev->batt_uenvp[0] = event_string;
+		bcdev->batt_uenvp[1] = NULL;
+
+		printk("[charge monitor work entry event_string: %s]\n", event_string);
+		kobject_uevent_env(&pst->psy->dev.kobj,
+					KOBJ_CHANGE,
+					bcdev->batt_uenvp);
+	}
+out:
+	kfree(event_string);
+	return;
+}
+
+void battery_chg_updata_health_status(struct battery_chg_dev *bcdev)
+{
+	if(bcdev->vbat_over){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_OVERVOLTAGE;
+	}else if(bcdev->lpd_status){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_USB_MOISTURE;
+	}else if(bcdev->chging_over_time){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_CHG_OVERTIME;
+	}else if(bcdev->vchg_err && bcdev->usb_voltage >= HIGH_VBUS_9V){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_CHG_OVERVOLTAGE;
+	}else if(bcdev->vchg_err && bcdev->usb_voltage <= LOW_VBUS_5V){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_CHG_UNDERVOLTAGE;
+	}else if(bcdev->batt_temp >= HIGH_TEMP){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_DEVICE_HOT;
+	}else if(bcdev->batt_temp < LOW_TEMP){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_COLD;
+	}else if(bcdev->usb_temp >= FCNT_USB_TEMP){
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_REMOVE_CHG;
+	}else{
+		bcdev->batt_health = FCNT_BATTERY_HEALTH_GOOD;
+	}
+
+	if (bcdev->batt_health != FCNT_BATTERY_HEALTH_GOOD) {
+		battery_notify_charger_health_event(bcdev);
+	}
+}
+
+void charger_detect_check(struct battery_chg_dev *bcdev)
+{
+	if(bcdev->usb_present){
+		if (bcdev->charger_type == POWER_SUPPLY_USB_TYPE_UNKNOWN){
+			battery_chg_variables_reset(bcdev, true);
+		}
+	}else{
+		battery_chg_variables_reset(bcdev, false);
+	}
+}
+
+void charger_usb_cc_open_check(struct battery_chg_dev *bcdev)
+{
+       int rc;
+
+       if (bcdev->usb_temp >= FCNT_USB_TEMP) {
+               if(!bcdev->cc_open) {
+                       rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_CC_OPEN, 1);
+                       if (rc < 0) {
+                               pr_err("%s:%d failed to write property", __func__, __LINE__);
+                       } else {
+                               bcdev->cc_open = true;
+                               pr_info("%s:%d cc open", __func__, __LINE__);
+                       }
+               }
+       } else if(bcdev->cc_open) {
+               rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_CC_OPEN, 0);
+               if (rc < 0) {
+                       pr_err("%s:%d failed to write property", __func__, __LINE__);
+               } else {
+                       bcdev->cc_open = false;
+                       pr_info("%s:%d cc open restore", __func__, __LINE__);
+               }
+       }
+}
+
+static void battery_chg_monitor_status_work(struct work_struct *work)
+{
+	struct battery_chg_dev *bcdev = container_of(work,
+					struct battery_chg_dev,
+					battery_monitor_work.work);
+
+	update_battery_charge_data(bcdev);
+	charger_detect_check(bcdev);
+
+	if(bcdev->usb_present){
+		battery_chg_protection_check(bcdev);
+		battery_chg_updata_health_status(bcdev);
+	}
+
+	if(bcdev->otg_enable) {
+		battery_chg_otg_check(bcdev);
+	}
+
+	battery_chg_print_log(bcdev);
+
+	charger_usb_cc_open_check(bcdev);
+
+	schedule_delayed_work(&bcdev->battery_monitor_work,msecs_to_jiffies(5000));
+}
+
+#define INTERVAL_TIME	4000
+static void battery_chg_full_charge_setting_work(struct work_struct *work)
+{
+	int rc;
+	int soc;
+
+	struct battery_chg_dev *bcdev = container_of(work,
+					struct battery_chg_dev, full_charge_setting_work.work);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+
+	rc = read_property_id(bcdev, pst, BATT_CAPACITY); /* read the SoC */
+	if (rc < 0) {
+		pr_err("%s:%d failed to read BATT_CAPACITY property\n", __func__, __LINE__);
+	}
+
+	soc = DIV_ROUND_CLOSEST(pst->prop[BATT_CAPACITY], 100);
+	pr_err("%s:%d full charge read chip_soc = %d ,ui_soc = %d\n", __func__, __LINE__, pst->prop[BATT_CAPACITY], soc);
+
+	/* Fitst time */
+	if (bcdev->high_soc && !!bcdev->full_charge_setting) { /* stop charging untill limit SoC */
+		rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, FULL_CHG_ON);
+		if (rc < 0) {
+			pr_err("%s:%d failed to write property", __func__, __LINE__);
+		}
+
+		if (soc > STOP_CHARGE_85_LOW_SOC) {
+			goto rerun;
+		} else {	/* reach limit soc, allow charging */
+			bcdev->high_soc = false;
+			rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, FULL_CHG_OFF);
+			if (rc < 0) {
+				pr_err("%s:%d failed to write property", __func__, __LINE__);
+			}
+		}
+	}
+
+	/* Rerun time */
+	if (!!bcdev->full_charge_setting) { /* function keep running */
+		/* fake */
+		if (soc >= STOP_CHARGE_85_LOW_SOC && soc <= STOP_CHARGE_85_HIGH_SOC) {
+			bcdev->fake_soc = STOP_CHARGE_85_LOW_SOC;
+			power_supply_changed(pst->psy);
+		} else if (soc >= 0 && soc <= STOP_CHARGE_85_LOW_SOC) {
+			bcdev->fake_soc = -10;
+		}
+
+		if (soc >= STOP_CHARGE_85_HIGH_SOC && soc <= 100) {
+			rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, FULL_CHG_ON);
+			if (rc < 0) {
+				pr_err("%s:%d failed to write property", __func__, __LINE__);
+			}
+		}
+
+		if (soc >= 0 && soc <= STOP_CHARGE_85_LOW_SOC) {
+			rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, FULL_CHG_OFF);
+			if (rc < 0) {
+				pr_err("%s:%d failed to write property", __func__, __LINE__);
+			}
+		}
+	} else { /* allow charging */
+		rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, FULL_CHG_OFF);
+		if (rc < 0) {
+			pr_err("%s:%d failed to write property", __func__, __LINE__);
+		}
+
+		/* soc jump preventation */
+		if (likely(bcdev->fake_soc < soc)) {
+			bcdev->fake_soc += 1;
+			power_supply_changed(pst->psy);
+		} else {
+			bcdev->fake_soc -= 1;
+			power_supply_changed(pst->psy);
+		}
+
+		if (bcdev->fake_soc == soc) {
+			bcdev->fake_soc = -10;
+			goto out;
+		}
+	}
+
+rerun:
+	schedule_delayed_work(&bcdev->full_charge_setting_work, msecs_to_jiffies(INTERVAL_TIME));
+out:
+	pr_err("%s:%d exit full-charge-setting\n", __func__, __LINE__);
+}
+
+//#define FV_REDUCTION 4350
+static ssize_t fv_reduction_store(struct class *c,
+					struct class_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+	int rc;
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_BATTERY],
+					BATT_FV_REDUCTION, val);
+	if (rc < 0)
+		return rc;
+
+	return count;
+}
+
+static ssize_t fv_reduction_show(struct class *c,
+					struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int rc;
+
+	rc = read_property_id(bcdev, pst, BATT_FV_REDUCTION);
+	if (rc < 0)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+				pst->prop[BATT_FV_REDUCTION]);
+}
+static CLASS_ATTR_RW(fv_reduction);
+
+static ssize_t cycle_count_store(struct class *c,
+					struct class_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+	int val;
+
+	if (kstrtoint(buf, 0, &val))
+		return -EINVAL;
+
+	bcdev->oem_cycle_count = val;
+
+	return count;
+}
+
+static ssize_t cycle_count_show(struct class *c,
+					struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int rc;
+
+	rc = read_property_id(bcdev, pst, BATT_CYCLE_COUNT);
+	if (rc < 0)
+		return rc;
+	bcdev->cycle_count = pst->prop[BATT_CYCLE_COUNT];
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",bcdev->cycle_count);
+}
+static CLASS_ATTR_RW(cycle_count);
+
+static ssize_t cycle_clear_store(struct class *c,
+					struct class_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	bcdev->cycle_clear = val;
+
+	return count;
+}
+
+static ssize_t cycle_clear_show(struct class *c,
+					struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",bcdev->cycle_clear);
+}
+static CLASS_ATTR_RW(cycle_clear);
+
+static ssize_t age_show(struct class *c,
+					struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	int rc;
+
+	rc = read_property_id(bcdev, pst, BATT_CHG_FULL_DESIGN);
+	if (rc < 0)
+		return rc;
+	bcdev->charge_full_design = pst->prop[BATT_CHG_FULL_DESIGN];
+
+	rc = read_property_id(bcdev, pst, BATT_CHG_FULL);
+	if (rc < 0)
+		return rc;
+	bcdev->charge_full = pst->prop[BATT_CHG_FULL];
+
+	bcdev->age = (bcdev->charge_full * 100)/BATTERY_DESIGNCAP;
+
+	if(bcdev->age > 100) {
+		bcdev->age = 100;
+	}
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n",bcdev->age);
+}
+static CLASS_ATTR_RO(age);
+
+static ssize_t full_charge_setting_store(struct class *c, struct class_attribute *attr,
+                    const char *buf, size_t count)
+{
+	int val;
+	int soc;
+	int rc;
+
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev, oem_battery_class);
+	struct psy_state *pst = &bcdev->psy_list[PSY_TYPE_BATTERY];
+	sscanf(buf, "%d", &val);
+	if (TURN_OFF_LIMIT_CHG != val && TURN_ON_85_LIMIT_CHG != val) { /* invalid input */
+		pr_err("%s:%d invalid input\n", __func__, __LINE__);
+		return sizeof(int);
+	}
+
+	bcdev->full_charge_setting = val; /* get new status */
+
+	if (true == !!bcdev->full_charge_setting) { /* turn on SoC detection */
+		rc = read_property_id(bcdev, pst, BATT_CAPACITY); /* read the SoC */
+		if (rc < 0) {
+			pr_err("%s:%d failed to read BATT_CAPACITY property\n", __func__, __LINE__);
+		}
+
+		soc = DIV_ROUND_CLOSEST(pst->prop[BATT_CAPACITY], 100);
+		if (soc >=0 && soc <= STOP_CHARGE_85_LOW_SOC) {
+			bcdev->high_soc = 0;
+		} else if (soc > STOP_CHARGE_85_LOW_SOC && soc <= 100) {
+			bcdev->high_soc = 1;
+		}
+
+		schedule_delayed_work(&bcdev->full_charge_setting_work, 0);
+	}
+
+	return count;
+}
+
+static ssize_t full_charge_setting_show(struct class *c, struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev,
+						oem_battery_class);
+
+	pr_info("%s:%d read successful, current_status:%s\n", __func__,
+				__LINE__, bcdev->full_charge_setting ? "ON" : "OFF");
+	return scnprintf(buf, PAGE_SIZE, "%d\n", bcdev->full_charge_setting);
+}
+static CLASS_ATTR_RW(full_charge_setting);
+
+static ssize_t schedule_chg_store(struct class *c, struct class_attribute *attr,
+                    const char *buf, size_t count)
+{
+	bool val;
+	int rc;
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev, oem_battery_class);
+	sscanf(buf, "%d", &val);
+	if (1 != val && 0 != val) { /* invalid input */
+		pr_err("%s:%d invalid input\n", __func__, __LINE__);
+		return sizeof(int);
+	}
+
+	if (val == bcdev->schedule_chg) { /* repeating input */
+		pr_err("%s:%d charging is already allowed\n", __func__, __LINE__);
+	}
+
+	bcdev->schedule_chg = val; /* get new status */
+
+	if (0 == bcdev->schedule_chg) { /* allow charging */
+		rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, SCHEDULE_CHG_OFF);
+		if (rc < 0) {
+			pr_err("%s:%d failed to write property", __func__, __LINE__);
+		}
+	} else { /* stop charging */
+		rc = write_property_id(bcdev, &bcdev->psy_list[PSY_TYPE_USB], USB_FULL_CHARGE_SET, SCHEDULE_CHG_ON);
+		if (rc < 0) {
+			pr_err("%s:%d failed to write property", __func__, __LINE__);
+		}
+	}
+
+	pr_info("%s:%d store successful, current_status:%s\n", __func__,
+			__LINE__, bcdev->schedule_chg ? "Stop charging" : "Allow charging");
+	return count;
+}
+
+static ssize_t schedule_chg_show(struct class *c, struct class_attribute *attr, char *buf)
+{
+	struct battery_chg_dev *bcdev = container_of(c, struct battery_chg_dev, oem_battery_class);
+
+	pr_info("%s:%d read successful, current_status:%s\n", __func__,
+			__LINE__, bcdev->schedule_chg ? "Stop charging" : "Allow charging");
+	return scnprintf(buf, PAGE_SIZE, "%d\n", bcdev->schedule_chg);
+}
+static CLASS_ATTR_RW(schedule_chg);
+
+static struct attribute *oem_battery_class_attrs[] = {
+	&class_attr_fv_reduction.attr,
+	&class_attr_cycle_count.attr,
+	&class_attr_cycle_clear.attr,
+	&class_attr_age.attr,
+	&class_attr_full_charge_setting.attr,
+	&class_attr_schedule_chg.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(oem_battery_class);
+
+static void battery_chg_variables_init(struct battery_chg_dev *bcdev)
+{
+	bcdev->charger_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	bcdev->chg_stop = false;
+	bcdev->temp_err = false;
+	bcdev->vbat_over = false;
+	bcdev->vchg_err = false;
+	bcdev->chging_over_time = false;
+	bcdev->total_time = 0;
+}
+
 static int battery_chg_probe(struct platform_device *pdev)
 {
 	struct battery_chg_dev *bcdev;
@@ -2728,6 +3869,8 @@ static int battery_chg_probe(struct platform_device *pdev)
 	INIT_WORK(&bcdev->subsys_up_work, battery_chg_subsys_up_work);
 	INIT_WORK(&bcdev->usb_type_work, battery_chg_update_usb_type_work);
 	INIT_WORK(&bcdev->battery_check_work, battery_chg_check_status_work);
+	INIT_DELAYED_WORK(&bcdev->battery_monitor_work, battery_chg_monitor_status_work);
+	INIT_DELAYED_WORK(&bcdev->full_charge_setting_work, battery_chg_full_charge_setting_work);
 	bcdev->dev = dev;
 
 	rc = battery_chg_register_panel_notifier(bcdev);
@@ -2808,6 +3951,14 @@ static int battery_chg_probe(struct platform_device *pdev)
 	}
 
 	schedule_work(&bcdev->usb_type_work);
+	if (bcdev->fcnt_charging_feature_supported) {
+		bcdev->oem_battery_class.name = "oem-battery";
+		bcdev->oem_battery_class.class_groups = oem_battery_class_groups;
+		class_register(&bcdev->oem_battery_class);
+		bcdev->dbg_health = -EINVAL;
+		battery_chg_variables_init(bcdev);
+		schedule_delayed_work(&bcdev->battery_monitor_work,msecs_to_jiffies(5000));
+	}
 
 	return 0;
 error:
@@ -2820,6 +3971,8 @@ error:
 	cancel_work_sync(&bcdev->usb_type_work);
 	cancel_work_sync(&bcdev->subsys_up_work);
 	cancel_work_sync(&bcdev->battery_check_work);
+	cancel_delayed_work_sync(&bcdev->battery_monitor_work);
+	cancel_delayed_work_sync(&bcdev->full_charge_setting_work);
 	complete(&bcdev->ack);
 	unregister_reboot_notifier(&bcdev->reboot_notifier);
 reg_error:
@@ -2844,6 +3997,9 @@ static int battery_chg_remove(struct platform_device *pdev)
 	device_init_wakeup(bcdev->dev, false);
 	debugfs_remove_recursive(bcdev->debugfs_dir);
 	class_unregister(&bcdev->battery_class);
+	if (bcdev->fcnt_charging_feature_supported) {
+		class_unregister(&bcdev->oem_battery_class);
+	}
 	pmic_glink_unregister_client(bcdev->client);
 	cancel_work_sync(&bcdev->subsys_up_work);
 	cancel_work_sync(&bcdev->usb_type_work);
