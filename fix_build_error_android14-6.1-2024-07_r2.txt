@@ -1,0 +1,197 @@
+diff --git a/arch/arm64/configs/vendor/blair_GKI.config b/arch/arm64/configs/vendor/blair_GKI.config
+index 3218985566ed..1bbca7bfd4a3 100644
+--- a/arch/arm64/configs/vendor/blair_GKI.config
++++ b/arch/arm64/configs/vendor/blair_GKI.config
+@@ -240,7 +240,7 @@ CONFIG_STM_PROTO_OST=m
+ CONFIG_STM_SOURCE_CONSOLE=m
+ CONFIG_STM_SOURCE_FTRACE=m
+ CONFIG_STM_SOURCE_HEARTBEAT=m
+-# CONFIG_SYN_COOKIES is not set
++CONFIG_SYN_COOKIES=y
+ CONFIG_THERMAL_TSENS_LEGACY=m
+ CONFIG_TOUCHSCREEN_USB_COMPOSITE=m
+ # CONFIG_TRIM_UNUSED_KSYMS is not set
+diff --git a/drivers/mfd/qcom-spmi-pmic.c b/drivers/mfd/qcom-spmi-pmic.c
+index bb09897cbd80..20f01fe853b8 100644
+--- a/drivers/mfd/qcom-spmi-pmic.c
++++ b/drivers/mfd/qcom-spmi-pmic.c
+@@ -310,7 +310,6 @@ static void pmic_spmi_remove(struct spmi_device *sdev)
+ 
+ MODULE_DEVICE_TABLE(of, pmic_spmi_id_table);
+ 
+-static void pmic_spmi_remove(struct spmi_device *sdev) {}
+ 
+ static struct spmi_driver pmic_spmi_driver = {
+ 	.probe = pmic_spmi_probe,
+diff --git a/drivers/phy/qualcomm/Makefile b/drivers/phy/qualcomm/Makefile
+index c47857cd40df..5869a07a3ec0 100644
+--- a/drivers/phy/qualcomm/Makefile
++++ b/drivers/phy/qualcomm/Makefile
+@@ -6,6 +6,7 @@ obj-$(CONFIG_PHY_QCOM_IPQ4019_USB)	+= phy-qcom-ipq4019-usb.o
+ obj-$(CONFIG_PHY_QCOM_IPQ806X_SATA)	+= phy-qcom-ipq806x-sata.o
+ obj-$(CONFIG_PHY_QCOM_PCIE2)		+= phy-qcom-pcie2.o
+ 
++obj-$(CONFIG_PHY_QCOM_QMP)              += phy-qcom-qmp.o
+ obj-$(CONFIG_PHY_QCOM_QMP_COMBO)	+= phy-qcom-qmp-combo.o
+ obj-$(CONFIG_PHY_QCOM_QMP_PCIE)		+= phy-qcom-qmp-pcie.o
+ obj-$(CONFIG_PHY_QCOM_QMP_PCIE_8996)	+= phy-qcom-qmp-pcie-msm8996.o
+@@ -22,8 +23,6 @@ obj-$(CONFIG_PHY_QCOM_UFS_V4_LAHAINA)	+= phy-qcom-ufs-qmp-v4-lahaina.o
+ obj-$(CONFIG_PHY_QCOM_UFS_V3_SM4350)	+= phy-qcom-ufs-qmp-v3.o
+ obj-$(CONFIG_PHY_QCOM_UFS_V4_CROW)	+= phy-qcom-ufs-qmp-v4-crow.o
+ 
+-	phy-qcom-qmp.o \
+-
+ obj-$(CONFIG_PHY_QCOM_QUSB2)		+= phy-qcom-qusb2.o
+ obj-$(CONFIG_PHY_QCOM_USB_HS) 		+= phy-qcom-usb-hs.o
+ obj-$(CONFIG_PHY_QCOM_USB_HSIC) 	+= phy-qcom-usb-hsic.o
+diff --git a/kernel/sched/walt/walt_cfs.c b/kernel/sched/walt/walt_cfs.c
+index 0999d0385bbc..3ab5134be9fc 100644
+--- a/kernel/sched/walt/walt_cfs.c
++++ b/kernel/sched/walt/walt_cfs.c
+@@ -930,7 +930,7 @@ int walt_find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
+ 
+ 
+ 	rcu_read_lock();
+-	need_idle |= uclamp_latency_sensitive(p);
++	need_idle |= false;
+ 
+ 	fbt_env.fastpath = 0;
+ 	fbt_env.need_idle = need_idle;
+diff --git a/kernel/sched/walt/walt_rt.c b/kernel/sched/walt/walt_rt.c
+index ee542285ebf7..5264b135e9fd 100644
+--- a/kernel/sched/walt/walt_rt.c
++++ b/kernel/sched/walt/walt_rt.c
+@@ -302,7 +302,7 @@ static void walt_select_task_rq_rt(void *unused, struct task_struct *task, int c
+ 	 * requirement of the task - which is only important on heterogeneous
+ 	 * systems like big.LITTLE.
+ 	 */
+-	may_not_preempt = task_may_not_preempt(curr, cpu);
++	may_not_preempt = false;
+ 
+ 	lowest_mask = this_cpu_cpumask_var_ptr(walt_local_cpu_mask);
+ 
+diff --git a/merge_android14-6.1-2024-07_r2.txt b/merge_android14-6.1-2024-07_r2.txt
+new file mode 100644
+index 000000000000..3485b188f186
+--- /dev/null
++++ b/merge_android14-6.1-2024-07_r2.txt
+@@ -0,0 +1,119 @@
++Merging:
++Documentation/devicetree/bindings/gpio/xlnx,gpio-xilinx.yaml
++Documentation/devicetree/bindings/interrupt-controller/qcom,mpm.yaml
++Documentation/devicetree/bindings/interrupt-controller/renesas,rzg2l-irqc.yaml
++Documentation/devicetree/bindings/media/mediatek,mdp3-rdma.yaml
++Documentation/devicetree/bindings/media/mediatek,mdp3-wrot.yaml
++Documentation/devicetree/bindings/media/rockchip-isp1.yaml
++Documentation/devicetree/bindings/mfd/mt6397.txt
++Documentation/devicetree/bindings/mmc/sdhci-msm.yaml
++Documentation/devicetree/bindings/net/wireless/marvell-8xxx.txt
++Documentation/devicetree/bindings/nvmem/mxs-ocotp.yaml
++Documentation/devicetree/bindings~HEAD
++drivers/bus/mhi/host/main.c
++drivers/clk/qcom/gcc-sm8150.c
++drivers/clk/qcom/videocc-sm8150.c
++drivers/hwtracing/coresight/coresight-tmc-core.c
++drivers/hwtracing/coresight/coresight-tmc-etr.c
++drivers/interconnect/qcom/sm8150.c
++drivers/interconnect/qcom/sm8150.h
++drivers/phy/qualcomm/Makefile
++drivers/soc/qcom/llcc-qcom.c
++include/dt-bindings/clock/qcom,videocc-sm8150.h
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/gpio/xlnx,gpio-xilinx.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/interrupt-controller/qcom,mpm.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/interrupt-controller/renesas,rzg2l-irqc.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/media/mediatek,mdp3-rdma.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/media/mediatek,mdp3-wrot.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/media/rockchip-isp1.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/mfd/mt6397.txt':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/mmc/sdhci-msm.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/net/wireless/marvell-8xxx.txt':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings/nvmem/mxs-ocotp.yaml':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Deleted merge conflict for 'Documentation/devicetree/bindings~HEAD':
++  {local}: a symbolic link -> '../../arch/arm64/boot/dts/vendor/bindings'
++  {remote}: deleted
++Use (c)reated or (d)eleted file, or (a)bort? m
++
++Normal merge conflict for 'drivers/bus/mhi/host/main.c':
++  {local}: modified file
++  {remote}: modified file
++
++Normal merge conflict for 'drivers/clk/qcom/gcc-sm8150.c':
++  {local}: modified file
++  {remote}: modified file
++
++Normal merge conflict for 'drivers/clk/qcom/videocc-sm8150.c':
++  {local}: modified file
++  {remote}: modified file
++
++Normal merge conflict for 'drivers/hwtracing/coresight/coresight-tmc-core.c':
++  {local}: modified file
++  {remote}: modified file
++
++Normal merge conflict for 'drivers/hwtracing/coresight/coresight-tmc-etr.c':
++  {local}: modified file
++  {remote}: modified file
++
++Normal merge conflict for 'drivers/interconnect/qcom/sm8150.c':
++  {local}: modified file
++  {remote}: modified file
++
++Deleted merge conflict for 'drivers/interconnect/qcom/sm8150.h':
++  {local}: deleted
++  {remote}: modified file
++Use (m)odified or (d)eleted file, or (a)bort? m
++
++Normal merge conflict for 'drivers/phy/qualcomm/Makefile':
++  {local}: modified file
++  {remote}: modified file
++
++Normal merge conflict for 'drivers/soc/qcom/llcc-qcom.c':
++  {local}: modified file
++  {remote}: modified file
++
++Normal merge conflict for 'include/dt-bindings/clock/qcom,videocc-sm8150.h':
++  {local}: modified file
++  {remote}: modified file
++
