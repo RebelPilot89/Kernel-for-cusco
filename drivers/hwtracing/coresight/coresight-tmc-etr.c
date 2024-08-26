@@ -2,7 +2,7 @@
 /*
  * Copyright(C) 2016 Linaro Limited. All rights reserved.
  * Author: Mathieu Poirier <mathieu.poirier@linaro.org>
- * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/atomic.h>
@@ -276,6 +276,7 @@ void tmc_free_sg_table(struct tmc_sg_table *sg_table)
 {
 	tmc_free_table_pages(sg_table);
 	tmc_free_data_pages(sg_table);
+	kfree(sg_table);
 }
 EXPORT_SYMBOL_GPL(tmc_free_sg_table);
 
@@ -666,7 +667,8 @@ static int tmc_etr_alloc_flat_buf(struct tmc_drvdata *drvdata,
 		return -ENOMEM;
 
 	flat_buf->sgt = dma_alloc_noncontiguous(real_dev, etr_buf->size,
-						DMA_FROM_DEVICE, GFP_KERNEL, 0);
+						DMA_FROM_DEVICE,
+						GFP_KERNEL | __GFP_NOWARN, 0);
 	if (!flat_buf->sgt) {
 		kfree(flat_buf);
 		return -ENOMEM;
@@ -1077,15 +1079,22 @@ static void tmc_sync_etr_buf(struct tmc_drvdata *drvdata)
 	etr_buf->ops->sync(etr_buf, rrp, rwp);
 }
 
-static void __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
+static int __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
 {
 	u32 axictl, sts;
 	struct etr_buf *etr_buf = drvdata->etr_buf;
+	int rc = 0;
 
 	CS_UNLOCK(drvdata->base);
 
 	/* Wait for TMCSReady bit to be set */
-	tmc_wait_for_tmcready(drvdata);
+	rc = tmc_wait_for_tmcready(drvdata);
+	if (rc) {
+		dev_err(&drvdata->csdev->dev,
+			"Failed to enable : TMC not ready\n");
+		CS_LOCK(drvdata->base);
+		return rc;
+	}
 
 	writel_relaxed(etr_buf->size / 4, drvdata->base + TMC_RSZ);
 	writel_relaxed(TMC_MODE_CIRCULAR_BUFFER, drvdata->base + TMC_MODE);
@@ -1134,6 +1143,7 @@ static void __tmc_etr_enable_hw(struct tmc_drvdata *drvdata)
 	tmc_enable_hw(drvdata);
 
 	CS_LOCK(drvdata->base);
+	return rc;
 }
 
 static int tmc_etr_enable_hw(struct tmc_drvdata *drvdata,
@@ -1162,7 +1172,12 @@ static int tmc_etr_enable_hw(struct tmc_drvdata *drvdata,
 	rc = coresight_claim_device(drvdata->csdev);
 	if (!rc) {
 		drvdata->etr_buf = etr_buf;
-		__tmc_etr_enable_hw(drvdata);
+		rc = __tmc_etr_enable_hw(drvdata);
+		if (rc) {
+			drvdata->etr_buf = NULL;
+			coresight_disclaim_device(drvdata->csdev);
+			tmc_etr_disable_catu(drvdata);
+		}
 	}
 
 	return rc;
@@ -1361,7 +1376,7 @@ out:
 	if (!ret) {
 		if (drvdata->out_mode == TMC_ETR_OUT_MODE_MEM)
 			tmc_etr_byte_cntr_start(drvdata->byte_cntr);
-		dev_err(&csdev->dev, "[%s][%d]TMC-ETR enabled\n", current->comm, current->pid);
+		dev_dbg(&csdev->dev, "TMC-ETR enabled\n");
 	}
 
 	return ret;
@@ -1859,7 +1874,7 @@ static int _tmc_disable_etr_sink(struct coresight_device *csdev,
 	if (previous_mode == CS_MODE_SYSFS)
 		tmc_etr_byte_cntr_stop(drvdata->byte_cntr);
 
-	dev_err(&csdev->dev, "[%s][%d]TMC-ETR disabled\n", current->comm, current->pid);
+	dev_dbg(&csdev->dev, "TMC-ETR disabled\n");
 	return 0;
 }
 
