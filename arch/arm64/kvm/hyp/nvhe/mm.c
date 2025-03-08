@@ -10,11 +10,11 @@
 #include <asm/kvm_pgtable.h>
 #include <asm/spectre.h>
 
-#include <nvhe/early_alloc.h>
-#include <nvhe/gfp.h>
-#include <nvhe/memory.h>
-#include <nvhe/mm.h>
-#include <nvhe/spinlock.h>
+#include "early_alloc.h"
+#include "gfp.h"
+#include "memory.h"
+#include "mm.h"
+#include "spinlock.h"
 
 struct kvm_pgtable pkvm_pgtable;
 hyp_spinlock_t pkvm_pgd_lock;

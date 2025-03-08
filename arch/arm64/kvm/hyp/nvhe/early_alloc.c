@@ -6,8 +6,8 @@
 
 #include <asm/kvm_pgtable.h>
 
-#include <nvhe/early_alloc.h>
-#include <nvhe/memory.h>
+#include "early_alloc.h"
+#include "memory.h"
 
 struct kvm_pgtable_mm_ops hyp_early_alloc_mm_ops;
 s64 __ro_after_init hyp_physvirt_offset;

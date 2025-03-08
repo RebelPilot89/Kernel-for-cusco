@@ -1792,133 +1792,128 @@ static ssize_t incfs_listxattr(struct dentry *d, char *list, size_t size)
 }
 
 struct dentry *incfs_mount_fs(struct file_system_type *type, int flags,
-			      const char *dev_name, void *data)
+                              const char *dev_name, void *data)
 {
-	struct mount_options options = {};
-	struct mount_info *mi = NULL;
-	struct path backing_dir_path = {};
-	struct dentry *index_dir = NULL;
-	struct dentry *incomplete_dir = NULL;
-	struct super_block *src_fs_sb = NULL;
-	struct inode *root_inode = NULL;
-	struct super_block *sb = sget(type, NULL, set_anon_super, flags, NULL);
-	bool dir_created = false;
-	int error = 0;
+    struct mount_options options = {};
+    struct mount_info *mi = NULL;
+    struct path backing_dir_path = {};
+    struct dentry *index_dir = NULL;
+    struct dentry *incomplete_dir = NULL;
+    struct super_block *src_fs_sb = NULL;
+    struct inode *root_inode = NULL;
+    struct super_block *sb = sget(type, NULL, set_anon_super, flags, NULL);
+    bool dir_created = false;
+    int error = 0;
 
-	if (IS_ERR(sb))
-		return ERR_CAST(sb);
+    if (IS_ERR(sb))
+        return ERR_CAST(sb);
 
-	sb->s_op = &incfs_super_ops;
-	sb->s_d_op = &incfs_dentry_ops;
-	sb->s_flags |= S_NOATIME;
-	sb->s_magic = INCFS_MAGIC_NUMBER;
-	sb->s_time_gran = 1;
-	sb->s_blocksize = INCFS_DATA_FILE_BLOCK_SIZE;
-	sb->s_blocksize_bits = blksize_bits(sb->s_blocksize);
-	sb->s_xattr = incfs_xattr_ops;
+    sb->s_op = &incfs_super_ops;
+    sb->s_d_op = &incfs_dentry_ops;
+    sb->s_flags |= S_NOATIME;
+    sb->s_magic = INCFS_MAGIC_NUMBER;
+    sb->s_time_gran = 1;
+    sb->s_blocksize = INCFS_DATA_FILE_BLOCK_SIZE;
+    sb->s_blocksize_bits = blksize_bits(sb->s_blocksize);
+    sb->s_xattr = incfs_xattr_ops;
 
-	BUILD_BUG_ON(PAGE_SIZE != INCFS_DATA_FILE_BLOCK_SIZE);
+    BUILD_BUG_ON(PAGE_SIZE != INCFS_DATA_FILE_BLOCK_SIZE);
 
-	if (!dev_name) {
-		pr_err("incfs: Backing dir is not set, filesystem can't be mounted.\n");
-		error = -ENOENT;
-		goto err_deactivate;
-	}
+    if (!dev_name) {
+        pr_err("incfs: Backing dir is not set, filesystem can't be mounted.\n");
+        error = -ENOENT;
+        goto err_deactivate;
+    }
 
-	error = parse_options(&options, (char *)data);
-	if (error != 0) {
-		pr_err("incfs: Options parsing error. %d\n", error);
-		goto err_deactivate;
-	}
+    error = parse_options(&options, (char *)data);
+    if (error != 0) {
+        pr_err("incfs: Options parsing error. %d\n", error);
+        goto err_deactivate;
+    }
 
-	sb->s_bdi->ra_pages = options.readahead_pages;
-	if (!dev_name) {
-		pr_err("incfs: Backing dir is not set, filesystem can't be mounted.\n");
-		error = -ENOENT;
-		goto err_free_opts;
-	}
+    sb->s_bdi->ra_pages = options.readahead_pages;
+    if (!dev_name) {
+        pr_err("incfs: Backing dir is not set, filesystem can't be mounted.\n");
+        error = -ENOENT;
+        goto err_free_opts;
+    }
 
-	error = kern_path(dev_name, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
-			&backing_dir_path);
-	if (error || backing_dir_path.dentry == NULL ||
-		!d_really_is_positive(backing_dir_path.dentry)) {
-		pr_err("incfs: Error accessing: %s.\n",
-			dev_name);
-		goto err_free_opts;
-	}
-	src_fs_sb = backing_dir_path.dentry->d_sb;
-	sb->s_maxbytes = src_fs_sb->s_maxbytes;
-	sb->s_stack_depth = src_fs_sb->s_stack_depth + 1;
+    error = kern_path(dev_name, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &backing_dir_path);
+    if (error || backing_dir_path.dentry == NULL ||
+        !d_really_is_positive(backing_dir_path.dentry)) {
+        pr_err("incfs: Error accessing: %s.\n", dev_name);
+        goto err_free_opts;
+    }
+    src_fs_sb = backing_dir_path.dentry->d_sb;
+    sb->s_maxbytes = src_fs_sb->s_maxbytes;
+    sb->s_stack_depth = src_fs_sb->s_stack_depth + 1;
 
-	if (sb->s_stack_depth > FILESYSTEM_MAX_STACK_DEPTH) {
-		error = -EINVAL;
-		goto err_put_path;
-	}
+    if (sb->s_stack_depth > FILESYSTEM_MAX_STACK_DEPTH) {
+        error = -EINVAL;
+        goto err_put_path;
+    }
 
-	mi = incfs_alloc_mount_info(sb, &options, &backing_dir_path);
-	if (IS_ERR_OR_NULL(mi)) {
-		error = PTR_ERR(mi);
-		pr_err("incfs: Error allocating mount info. %d\n", error);
-		goto err_put_path;
-	}
+    mi = incfs_alloc_mount_info(sb, &options, &backing_dir_path);
+    if (IS_ERR_OR_NULL(mi)) {
+        error = PTR_ERR(mi);
+        pr_err("incfs: Error allocating mount info. %d\n", error);
+        goto err_put_path;
+    }
 
-	sb->s_fs_info = mi;
-	mi->mi_backing_dir_path = backing_dir_path;
-	index_dir = open_or_create_special_dir(backing_dir_path.dentry,
-					       INCFS_INDEX_NAME, &dir_created);
-	if (IS_ERR_OR_NULL(index_dir)) {
-		error = PTR_ERR(index_dir);
-		pr_err("incfs: Can't find or create .index dir in %s\n",
-			dev_name);
-		/* No need to null index_dir since we don't put it */
-		goto err_put_path;
-	}
+    sb->s_fs_info = mi;
+    mi->mi_backing_dir_path = backing_dir_path;
+    index_dir = open_or_create_special_dir(backing_dir_path.dentry, INCFS_INDEX_NAME, &dir_created);
+    if (IS_ERR_OR_NULL(index_dir)) {
+        error = PTR_ERR(index_dir);
+        pr_err("incfs: Can't find or create .index dir in %s\n", dev_name);
+        /* No need to null index_dir since we don't put it */
+        goto err_put_path;
+    }
 
-	mi->mi_index_dir = index_dir;
-	mi->mi_index_free = dir_created;
+    mi->mi_index_dir = index_dir;
+    mi->mi_index_free = dir_created;
 
-	incomplete_dir = open_or_create_special_dir(backing_dir_path.dentry,
-						    INCFS_INCOMPLETE_NAME,
-						    &dir_created);
-	if (IS_ERR_OR_NULL(incomplete_dir)) {
-		error = PTR_ERR(incomplete_dir);
-		pr_err("incfs: Can't find or create .incomplete dir in %s\n",
-			dev_name);
-		/* No need to null incomplete_dir since we don't put it */
-		goto err_put_path;
-	}
-	mi->mi_incomplete_dir = incomplete_dir;
-	mi->mi_incomplete_free = dir_created;
+    incomplete_dir = open_or_create_special_dir(backing_dir_path.dentry,
+                                                INCFS_INCOMPLETE_NAME,
+                                                &dir_created);
+    if (IS_ERR_OR_NULL(incomplete_dir)) {
+        error = PTR_ERR(incomplete_dir);
+        pr_err("incfs: Can't find or create .incomplete dir in %s\n", dev_name);
+        /* No need to null incomplete_dir since we don't put it */
+        goto err_put_path;
+    }
+    mi->mi_incomplete_dir = incomplete_dir;
+    mi->mi_incomplete_free = dir_created;
 
-	root_inode = fetch_regular_inode(sb, backing_dir_path.dentry);
-	if (IS_ERR(root_inode)) {
-		error = PTR_ERR(root_inode);
-		goto err_put_path;
-	}
+    root_inode = fetch_regular_inode(sb, backing_dir_path.dentry);
+    if (IS_ERR(root_inode)) {
+        error = PTR_ERR(root_inode);
+        goto err_put_path;
+    }
 
-	sb->s_root = d_make_root(root_inode);
-	if (!sb->s_root) {
-		error = -ENOMEM;
-		goto err_put_path;
-	}
-	error = incfs_init_dentry(sb->s_root, &backing_dir_path);
-	if (error)
-		goto err_put_path;
+    sb->s_root = d_make_root(root_inode);
+    if (!sb->s_root) {
+        error = -ENOMEM;
+        goto err_put_path;
+    }
+    error = incfs_init_dentry(sb->s_root, &backing_dir_path);
+    if (error)
+        goto err_put_path;
 
-	path_put(&backing_dir_path);
-	sb->s_flags |= SB_ACTIVE;
+    path_put(&backing_dir_path);
+    sb->s_flags |= SB_ACTIVE;
 
-	pr_debug("incfs: mount\n");
-	return dget(sb->s_root);
+    pr_debug("incfs: mount\n");
+    return dget(sb->s_root);
 
 err_put_path:
-	path_put(&backing_dir_path);
+    path_put(&backing_dir_path);
 err_free_opts:
-	free_options(&options);
+    free_options(&options);
 err_deactivate:
-	deactivate_locked_super(sb);
-	pr_err("incfs: mount failed %d\n", error);
-	return ERR_PTR(error);
+    deactivate_locked_super(sb);
+    pr_err("incfs: mount failed %d\n", error);
+    return ERR_PTR(error);
 }
 
 static int incfs_remount_fs(struct super_block *sb, int *flags, char *data)

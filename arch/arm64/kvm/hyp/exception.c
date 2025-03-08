@@ -10,7 +10,7 @@
  * Author: Christoffer Dall <c.dall@virtualopensystems.com>
  */
 
-#include <hyp/adjust_pc.h>
+#include "adjust_pc.h"
 #include <linux/kvm_host.h>
 #include <asm/kvm_emulate.h>
 

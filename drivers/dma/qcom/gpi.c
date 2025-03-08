@@ -2360,26 +2360,24 @@ static void gpi_noop_tre(struct gpii_chan *gpii_chan)
 	noop_mask = NOOP_TRE_MASK(1, 0, 0, 0, 1);
 	noop_tre = NOOP_TRE;
 
-	while (local_rp != local_wp) {
-		/* dump the channel ring at the time of error */
-		tre = (struct msm_gpi_tre *)cntxt_rp;
-		GPII_ERR(gpii, gpii_chan->chid, "local_rp:0x%011x TRE: %08x %08x %08x %08x\n",
-			local_rp, tre->dword[0], tre->dword[1],
-			 tre->dword[2], tre->dword[3]);
-		tre->dword[3] &= noop_mask;
-		tre->dword[3] |= noop_tre;
-		local_rp += ch_ring->el_size;
-		cntxt_rp += ch_ring->el_size;
-		if (cntxt_rp >= (ch_ring->base + ch_ring->len)) {
-			cntxt_rp = ch_ring->base;
-			local_rp = to_physical(ch_ring, ch_ring->base);
-		}
-		GPII_INFO(gpii, gpii_chan->chid,
-			"local_rp:0x%0llx\n", local_rp);
-	}
-
-	GPII_INFO(gpii, gpii_chan->chid, "exit\n");
+while (local_rp != local_wp) {
+    /* dump the channel ring at the time of error */
+    tre = (struct msm_gpi_tre *)cntxt_rp;
+    GPII_ERR(gpii, gpii_chan->chid, "local_rp:0x%011llx TRE: %08x %08x %08x %08x\n",
+        local_rp, tre->dword[0], tre->dword[1],
+        tre->dword[2], tre->dword[3]);
+    tre->dword[3] &= noop_mask;
+    tre->dword[3] |= noop_tre;
+    local_rp += ch_ring->el_size;
+    cntxt_rp += ch_ring->el_size;
+    if (cntxt_rp >= (ch_ring->base + ch_ring->len)) {
+        cntxt_rp = ch_ring->base;
+        local_rp = to_physical(ch_ring, ch_ring->base);
+    }
+    GPII_INFO(gpii, gpii_chan->chid,
+        "local_rp:0x%011llx\n", local_rp);
 }
+
 
 /* pause dma transfer for all channels */
 static int gpi_pause(struct dma_chan *chan)

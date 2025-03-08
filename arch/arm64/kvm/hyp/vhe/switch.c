@@ -4,8 +4,8 @@
  * Author: Marc Zyngier <marc.zyngier@arm.com>
  */
 
-#include <hyp/adjust_pc.h>
-#include <hyp/switch.h>
+#include "hyp/adjust_pc.h"
+#include "hyp/switch.h"
 
 #include <linux/arm-smccc.h>
 #include <linux/kvm_host.h>

@@ -4,7 +4,7 @@
  * Author: Andrew Scull <ascull@google.com>
  */
 
-#include <hyp/switch.h>
+#include "switch.h"
 
 #include <asm/pgtable-types.h>
 #include <asm/kvm_asm.h>
@@ -13,9 +13,9 @@
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
 
-#include <nvhe/mem_protect.h>
-#include <nvhe/mm.h>
-#include <nvhe/trap_handler.h>
+#include "mem_protect.h"
+#include "mm.h"
+#include "trap_handler.h"
 
 DEFINE_PER_CPU(struct kvm_nvhe_init_params, kvm_init_params);
 

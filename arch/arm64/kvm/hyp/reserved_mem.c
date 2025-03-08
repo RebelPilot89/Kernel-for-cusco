@@ -10,8 +10,8 @@
 
 #include <asm/kvm_host.h>
 
-#include <nvhe/memory.h>
-#include <nvhe/mm.h>
+#include "nvhe/memory.h"
+#include "nvhe/mm.h"
 
 static struct memblock_region *hyp_memory = kvm_nvhe_sym(hyp_memory);
 static unsigned int *hyp_memblock_nr_ptr = &kvm_nvhe_sym(hyp_memblock_nr);

@@ -8,7 +8,7 @@
 #include <asm/kvm_mmu.h>
 #include <asm/tlbflush.h>
 
-#include <nvhe/mem_protect.h>
+#include "mem_protect.h"
 
 struct tlb_inv_context {
 	u64		tcr;

@@ -4,8 +4,8 @@
 
 #include <linux/list.h>
 
-#include <nvhe/memory.h>
-#include <nvhe/spinlock.h>
+#include "memory.h"
+#include "spinlock.h"
 
 #define HYP_NO_ORDER	UINT_MAX
 

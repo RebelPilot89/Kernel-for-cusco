@@ -11,12 +11,12 @@
 #include <asm/kvm_pgtable.h>
 #include <asm/stage2_pgtable.h>
 
-#include <hyp/switch.h>
+#include "switch.h"
 
-#include <nvhe/gfp.h>
-#include <nvhe/memory.h>
-#include <nvhe/mem_protect.h>
-#include <nvhe/mm.h>
+#include "gfp.h"
+#include "memory.h"
+#include "mem_protect.h"
+#include "mm.h"
 
 #define KVM_HOST_S2_FLAGS (KVM_PGTABLE_S2_NOFWB | KVM_PGTABLE_S2_IDMAP)
 

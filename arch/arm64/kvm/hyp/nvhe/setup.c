@@ -9,12 +9,12 @@
 #include <asm/kvm_mmu.h>
 #include <asm/kvm_pgtable.h>
 
-#include <nvhe/early_alloc.h>
-#include <nvhe/gfp.h>
-#include <nvhe/memory.h>
-#include <nvhe/mem_protect.h>
-#include <nvhe/mm.h>
-#include <nvhe/trap_handler.h>
+#include "early_alloc.h"
+#include "gfp.h"
+#include "memory.h"
+#include "mem_protect.h"
+#include "mm.h"
+#include "trap_handler.h"
 
 struct hyp_pool hpool;
 struct kvm_pgtable_mm_ops pkvm_pgtable_mm_ops;

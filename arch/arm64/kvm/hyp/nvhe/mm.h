@@ -7,8 +7,8 @@
 #include <linux/memblock.h>
 #include <linux/types.h>
 
-#include <nvhe/memory.h>
-#include <nvhe/spinlock.h>
+#include "memory.h"
+#include "spinlock.h"
 
 #define HYP_MEMBLOCK_REGIONS 128
 extern struct memblock_region kvm_nvhe_sym(hyp_memory)[];

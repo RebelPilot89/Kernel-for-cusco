@@ -4,9 +4,9 @@
  * Author: Marc Zyngier <marc.zyngier@arm.com>
  */
 
-#include <hyp/adjust_pc.h>
-#include <hyp/switch.h>
-#include <hyp/sysreg-sr.h>
+#include "adjust_pc.h"
+#include "switch.h"
+#include "sysreg-sr.h"
 
 #include <linux/arm-smccc.h>
 #include <linux/kvm_host.h>
@@ -28,7 +28,7 @@
 #include <asm/processor.h>
 #include <asm/thread_info.h>
 
-#include <nvhe/mem_protect.h>
+#include "mem_protect.h"
 
 /* Non-VHE specific context */
 DEFINE_PER_CPU(struct kvm_host_data, kvm_host_data);

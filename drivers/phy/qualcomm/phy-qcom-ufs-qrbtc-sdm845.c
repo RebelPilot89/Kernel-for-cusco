@@ -93,7 +93,7 @@ static int ufs_qcom_phy_qrbtc_sdm845_init(struct phy *generic_phy)
 
 	ret = ufs_qcom_phy_get_reset(phy_common);
 	if (ret)
-		dev_err(phy_common->dev, "Failed to get reset control\n", ret);
+		dev_err(phy_common->dev, "Failed to get reset control\n");
 
 	return ret;
 }

@@ -4,7 +4,7 @@
  * Author: Marc Zyngier <marc.zyngier@arm.com>
  */
 
-#include <hyp/debug-sr.h>
+#include "debug-sr.h"
 
 #include <linux/compiler.h>
 #include <linux/kvm_host.h>

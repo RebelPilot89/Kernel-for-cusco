@@ -4,7 +4,7 @@
  * Author: Marc Zyngier <marc.zyngier@arm.com>
  */
 
-#include <hyp/adjust_pc.h>
+#include "adjust_pc.h"
 
 #include <linux/compiler.h>
 #include <linux/irqchip/arm-gic.h>

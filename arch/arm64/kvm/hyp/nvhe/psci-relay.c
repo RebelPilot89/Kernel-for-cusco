@@ -11,8 +11,8 @@
 #include <linux/kvm_host.h>
 #include <uapi/linux/psci.h>
 
-#include <nvhe/memory.h>
-#include <nvhe/trap_handler.h>
+#include "memory.h"
+#include "trap_handler.h"
 
 void kvm_hyp_cpu_entry(unsigned long r0);
 void kvm_hyp_cpu_resume(unsigned long r0);
