@@ -164,3 +164,8 @@ arch/arm/boot/dts/vendor
 
 # Documentation toolchain
 sphinx_*/
+
+# Ignorar archivos específicos de tu proyecto
+gemini_terminal.py
+myenv/
+
