@@ -1,0 +1,2 @@
+echo "gemini_terminal.py" >> .gitignore
+echo "myenv/" >> .gitignore
